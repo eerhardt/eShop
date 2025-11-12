@@ -43,6 +43,10 @@ var orderingApi = builder.AddProject<Projects.Ordering_API>("ordering-api")
     .WithEnvironment("Identity__Url", identityEndpoint);
 
 builder.AddProject<Projects.OrderProcessor>("order-processor")
+    .PublishAsDockerFile(c =>
+    { 
+        c.WithDockerfile("../..", "src/OrderProcessor/Dockerfile");
+    })
     .WithReference(rabbitMq).WaitFor(rabbitMq)
     .WithReference(orderDb)
     .WaitFor(orderingApi); // wait for the orderingApi to be ready because that contains the EF migrations
