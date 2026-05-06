@@ -6,7 +6,7 @@ import { createBuilder, ContainerLifetime, QueryParameterMatchMode } from './.mo
 
 const builder = await createBuilder();
 
-builder.addAzureContainerAppEnvironment("env");
+await builder.addDockerComposeEnvironment("env");
 
 // Infrastructure
 const redis = await builder.addRedis("redis");
@@ -42,9 +42,9 @@ const identityEndpoint = await identityApi.getEndpoint(launchProfileName);
 const basketApi = await builder.addCSharpApp("basket-api", "../Basket.API/Basket.API.csproj")
     .withReference(redis)
     .withReference(rabbitMq).waitFor(rabbitMq)
-    .withEnvironmentEndpoint("Identity__Url", identityEndpoint)
+    .withEnvironment("Identity__Url", identityEndpoint)
     .withEnvironment("ASPNETCORE_FORWARDEDHEADERS_ENABLED", "true");
-redis.withParentRelationship(basketApi);
+await redis.withParentRelationship(basketApi);
 
 const catalogApi = await builder.addCSharpApp("catalog-api", "../Catalog.API/Catalog.API.csproj")
     .withReference(rabbitMq).waitFor(rabbitMq)
@@ -55,7 +55,7 @@ const orderingApi = await builder.addCSharpApp("ordering-api", "../Ordering.API/
     .withReference(rabbitMq).waitFor(rabbitMq)
     .withReference(orderDb).waitFor(orderDb)
     .withHttpHealthCheck({ path: "/health" })
-    .withEnvironmentEndpoint("Identity__Url", identityEndpoint)
+    .withEnvironment("Identity__Url", identityEndpoint)
     .withEnvironment("ASPNETCORE_FORWARDEDHEADERS_ENABLED", "true");
 
 await builder.addCSharpApp("order-processor", "../OrderProcessor/OrderProcessor.csproj")
@@ -71,7 +71,7 @@ await builder.addCSharpApp("payment-processor", "../PaymentProcessor/PaymentProc
 const webHooksApi = await builder.addCSharpApp("webhooks-api", "../Webhooks.API/Webhooks.API.csproj")
     .withReference(rabbitMq).waitFor(rabbitMq)
     .withReference(webhooksDb)
-    .withEnvironmentEndpoint("Identity__Url", identityEndpoint)
+    .withEnvironment("Identity__Url", identityEndpoint)
     .withEnvironment("ASPNETCORE_FORWARDEDHEADERS_ENABLED", "true");
 
 // Reverse proxies
@@ -130,34 +130,39 @@ await builder.addYarp("mobile-bff")
 
         // Ordering routes
         const orderingEndpoint = await orderingApi.getEndpoint("http");
-        await yarp.addRouteFromEndpoint("/api/orders/{*any}", orderingEndpoint)
+        await yarp.addRoute("/api/orders/{*any}", orderingEndpoint)
             .withMatchRouteQueryParameter([{ name: "api-version", values: ["1.0", "1"], mode: QueryParameterMatchMode.Exact }]);
 
         // Identity routes
         const identityHttpEndpoint = await identityApi.getEndpoint("http");
-        await yarp.addRouteFromEndpoint("/identity/{*any}", identityHttpEndpoint)
+        await yarp.addRoute("/identity/{*any}", identityHttpEndpoint)
             .withTransformPathRemovePrefix("/identity");
     });
 
 // Apps
-const webhooksClient = await builder.addProject("webhooksclient", "../WebhookClient/WebhookClient.csproj", launchProfileName)
+const webhooksClient = await builder.addProject("webhooksclient", "../WebhookClient/WebhookClient.csproj", { launchProfileOrOptions: launchProfileName })
     .withReference(webHooksApi)
-    .withEnvironmentEndpoint("IdentityUrl", identityEndpoint)
+    .withEnvironment("IdentityUrl", identityEndpoint)
     .withEnvironment("ASPNETCORE_FORWARDEDHEADERS_ENABLED", "true");
 
-const webApp = await builder.addProject("webapp", "../WebApp/WebApp.csproj", launchProfileName)
+let webAppBuilder = builder.addProject("webapp", "../WebApp/WebApp.csproj", { launchProfileOrOptions: launchProfileName })
     .withExternalHttpEndpoints()
-    .withUrlForEndpoint("http", async (url) => { url.displayText = "Online Store (http)"; })
-    .withUrlForEndpoint("https", async (url) => { url.displayText = "Online Store (https)"; })
+    .withUrlForEndpoint("http", async (url) => { url.displayText = "Online Store (http)"; });
+
+if (launchProfileName === "https") {
+    webAppBuilder = webAppBuilder.withUrlForEndpoint("https", async (url) => { url.displayText = "Online Store (https)"; });
+}
+
+const webApp = await webAppBuilder
     .withReference(basketApi)
     .withReference(catalogApi)
     .withReference(orderingApi)
     .withReference(rabbitMq).waitFor(rabbitMq)
-    .withEnvironmentEndpoint("IdentityUrl", identityEndpoint)
+    .withEnvironment("IdentityUrl", identityEndpoint)
     .withEnvironment("ASPNETCORE_FORWARDEDHEADERS_ENABLED", "true");
 
 // Set to true if you want to use OpenAI
-const useOpenAI = true;
+const useOpenAI = false;
 if (useOpenAI) {
     const openAI = await builder.addAzureOpenAI("openai");
 
@@ -175,8 +180,8 @@ if (useOpenAI) {
             d.skuCapacity.set(20);
         });
 
-    catalogApi.withReference(textEmbedding);
-    webApp.withReference(chat);
+    await catalogApi.withReference(textEmbedding);
+    await webApp.withReference(chat);
 }
 
 // Ollama configuration (disabled by default)
@@ -193,18 +198,18 @@ if (useOllama) {
 // Wire up the callback urls (self referencing)
 const webAppEndpoint = await webApp.getEndpoint(launchProfileName);
 const webhooksClientEndpoint = await webhooksClient.getEndpoint(launchProfileName);
-webApp.withEnvironmentEndpoint("CallBackUrl", webAppEndpoint);
-webhooksClient.withEnvironmentEndpoint("CallBackUrl", webhooksClientEndpoint);
+await webApp.withEnvironment("CallBackUrl", webAppEndpoint);
+await webhooksClient.withEnvironment("CallBackUrl", webhooksClientEndpoint);
 
 // Identity has a reference to all of the apps for callback urls, this is a cyclic reference
 const basketHttpEndpoint = await basketApi.getEndpoint("http");
 const orderingHttpEndpoint = await orderingApi.getEndpoint("http");
 const webHooksHttpEndpoint = await webHooksApi.getEndpoint("http");
-identityApi
-    .withEnvironmentEndpoint("BasketApiClient", basketHttpEndpoint)
-    .withEnvironmentEndpoint("OrderingApiClient", orderingHttpEndpoint)
-    .withEnvironmentEndpoint("WebhooksApiClient", webHooksHttpEndpoint)
-    .withEnvironmentEndpoint("WebhooksWebClient", webhooksClientEndpoint)
-    .withEnvironmentEndpoint("WebAppClient", webAppEndpoint);
+await identityApi
+    .withEnvironment("BasketApiClient", basketHttpEndpoint)
+    .withEnvironment("OrderingApiClient", orderingHttpEndpoint)
+    .withEnvironment("WebhooksApiClient", webHooksHttpEndpoint)
+    .withEnvironment("WebhooksWebClient", webhooksClientEndpoint)
+    .withEnvironment("WebAppClient", webAppEndpoint);
 
 await builder.build().run();
